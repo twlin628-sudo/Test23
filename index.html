@@ -1,10 +1,15 @@
 <!DOCTYPE html>
 <!--
   ESL Weekly — AI 英文學習（單檔 HTML）
-  v1.0.0 · 2026-06-18
+  v1.0.1 · 2026-06-18
   以「Week」為單位的英文學習 app，字庫內建自 ESL Semester Weekly Vocabulary。
   4 分頁：隨機出題 / 單字查詢 / 口說作答 / 聽力輸入。
   衍生自 LexSuite (index.html) v2.0.1，將「等級系統」改為「Week 系統」。
+
+  變更紀錄：
+  v1.0.1 — 修正口說/聽力「英文對、中文錯卻判定正確」的 bug：
+           前端原本只看 r.matched，現加上 en_ok/zh_ok 把關（明確為 false 即推翻命中）。
+  v1.0.0 — 初版。
 -->
 <html lang="zh-Hant">
 <head>
@@ -434,7 +439,7 @@
 
 <header>
   <h1>✦ ESL Weekly</h1>
-  <span class="ver">v1.0.0</span>
+  <span class="ver">v1.0.1</span>
   <span class="model-badge" id="model-badge" onclick="openModal()">gemma4:e4b ▾</span>
 </header>
 
@@ -1225,6 +1230,8 @@ function renderResult(r, enText, zhText) {
     matchedIdx = words.findIndex(w => w.word.toLowerCase() === String(r.matched).toLowerCase());
     if (matchedIdx < 0 && r.index >= 1 && r.index <= words.length) matchedIdx = r.index - 1;
   }
+  // 防小模型矛盾回應：英文或中文被明確判為不符時，即使回了 matched 也不算命中
+  if (r && (r.en_ok === false || r.zh_ok === false)) matchedIdx = -1;
   const chips = detailChips(r, matchedIdx);
 
   if (matchedIdx >= 0) {
@@ -1384,6 +1391,8 @@ function renderResult2(r, en, zh) {
     idx = words2.findIndex(w => w.word.toLowerCase() === String(r.matched).toLowerCase());
     if (idx < 0 && r.index >= 1 && r.index <= words2.length) idx = r.index - 1;
   }
+  // 防小模型矛盾回應：英文或中文被明確判為不符時，即使回了 matched 也不算命中
+  if (r && (r.en_ok === false || r.zh_ok === false)) idx = -1;
   const chips = detailChips(r, idx);
 
   if (idx >= 0) {
