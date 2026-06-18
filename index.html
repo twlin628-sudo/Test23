@@ -1,12 +1,15 @@
 <!DOCTYPE html>
 <!--
   ESL Weekly — AI 英文學習（單檔 HTML）
-  v1.0.1 · 2026-06-18
+  v1.1.0 · 2026-06-18
   以「Week」為單位的英文學習 app，字庫內建自 ESL Semester Weekly Vocabulary。
   4 分頁：隨機出題 / 單字查詢 / 口說作答 / 聽力輸入。
   衍生自 LexSuite (index.html) v2.0.1，將「等級系統」改為「Week 系統」。
 
   變更紀錄：
+  v1.1.0 — ① Week 標籤改為可複選：單字由所有選中 Week 的單字聯集去重後抽出
+           （weekRand/Speak/Listen 改陣列、toggleWeek、collectWords；出題前檢查至少選一個）。
+           ② TTS 改為女聲優先（pickEnVoice 以語音名稱啟發式挑女聲）。
   v1.0.1 — 修正口說/聽力「英文對、中文錯卻判定正確」的 bug：
            前端原本只看 r.matched，現加上 en_ok/zh_ok 把關（明確為 false 即推翻命中）。
   v1.0.0 — 初版。
@@ -439,7 +442,7 @@
 
 <header>
   <h1>✦ ESL Weekly</h1>
-  <span class="ver">v1.0.1</span>
+  <span class="ver">v1.1.0</span>
   <span class="model-badge" id="model-badge" onclick="openModal()">gemma4:e4b ▾</span>
 </header>
 
@@ -618,10 +621,10 @@ const BASE = "https://spring-art-db47.twlin628.workers.dev";
 let model      = localStorage.getItem("vocab_model") || "gemma4:e4b";
 let ttsRate    = 0.85;
 
-// 各分頁所選 Week（彼此獨立），預設第一個 Week
-let weekRand   = "1&2";   // 隨機出題
-let weekSpeak  = "1&2";   // 口說作答
-let weekListen = "1&2";   // 聽力輸入
+// 各分頁所選 Week（彼此獨立，可複選），預設選第一個 Week
+let weekRand   = ["1&2"];   // 隨機出題
+let weekSpeak  = ["1&2"];   // 口說作答
+let weekListen = ["1&2"];   // 聽力輸入
 
 // 忙碌旗標
 let busy       = false;    // 隨機出題
@@ -657,10 +660,17 @@ if (synth) synth.getVoices();
 let activeTtsBtn  = null;   // 隨機/查詢卡片的朗讀鍵
 let activePlayBtn = null;   // 聽力頁的播放鍵
 
+// 挑英文女聲：Web Speech 無標準性別欄位，改用語音名稱啟發式判斷
 function pickEnVoice() {
-  const voices = synth.getVoices();
-  return voices.find(v => v.lang.startsWith("en") && v.localService)
-      || voices.find(v => v.lang.startsWith("en"));
+  const voices = synth.getVoices().filter(v => v.lang && v.lang.startsWith("en"));
+  if (!voices.length) return null;
+  const FEMALE = /female|woman|samantha|victoria|karen|moira|tessa|fiona|serena|allison|ava|susan|zira|aria|jenny|michelle|sonia|google us english|google uk english female|zoe|amelie|catherine|linda|heather|nora|emma|sara|olivia/i;
+  const MALE   = /\bmale\b|\bman\b|david|mark|daniel|alex|fred|tom|george|james|oliver|ryan|guy|eric|brandon|arthur|google uk english male/i;
+  return voices.find(v => FEMALE.test(v.name))                      // 1. 明確女聲
+      || voices.find(v => !MALE.test(v.name) && v.localService)     // 2. 非明確男聲且本機語音
+      || voices.find(v => !MALE.test(v.name))                       // 3. 非明確男聲
+      || voices.find(v => v.localService)                           // 4. 退回本機語音
+      || voices[0];                                                 // 5. 任一英文語音
 }
 function clearTtsBtn() {
   if (activeTtsBtn) { activeTtsBtn.classList.remove("speaking"); activeTtsBtn.textContent = "🔊"; activeTtsBtn = null; }
@@ -837,9 +847,18 @@ function getWeekWords(key) {
   return RAW_VOCAB[key] || [];
 }
 
-// 從某 Week 隨機抽 n 個不重複單字（洗牌後取前 n）
-function pickWeekWords(key, n) {
-  const pool = getWeekWords(key).slice();
+// 彙整「多個」Week 的單字並去重（各 Week 各自處理考試週聯集）
+function collectWords(keys) {
+  const seen = new Set(), out = [];
+  keys.forEach(k => getWeekWords(k).forEach(item => {
+    if (!seen.has(item.w)) { seen.add(item.w); out.push(item); }
+  }));
+  return out;
+}
+
+// 從選定的多個 Week 隨機抽 n 個不重複單字（洗牌後取前 n）
+function pickWeekWords(keys, n) {
+  const pool = collectWords(keys);
   for (let i = pool.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
     [pool[i], pool[j]] = [pool[j], pool[i]];
@@ -847,36 +866,35 @@ function pickWeekWords(key, n) {
   return pool.slice(0, Math.min(n, pool.length));
 }
 
-// 動態建立三個分頁的 Week 標籤列
+// 動態建立三個分頁的 Week 標籤列（可複選）
 function buildWeekRow(rowId, setter, current) {
   const row = document.getElementById(rowId);
   WEEK_LIST.forEach(wk => {
     const b = document.createElement("button");
-    b.className = "level-btn" + (wk.key === current ? " active" : "");
+    b.className = "level-btn" + (current.includes(wk.key) ? " active" : "");
     b.textContent = wk.label;
     b.onclick = () => setter(wk.key, b);
     row.appendChild(b);
   });
 }
 
-function setWeekRand(k, btn) {
-  weekRand = k;
-  document.querySelectorAll("#week-row-rand .level-btn").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
-}
-function setWeekSpeak(k, btn) {
-  weekSpeak = k;
-  document.querySelectorAll("#week-row-speak .level-btn").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
-}
-function setWeekListen(k, btn) {
-  weekListen = k;
-  document.querySelectorAll("#week-row-listen .level-btn").forEach(b => b.classList.remove("active"));
-  btn.classList.add("active");
+// 複選 toggle：點擊則切換該 Week 是否選中（原地修改 arr）
+function toggleWeek(arr, k, btn) {
+  const i = arr.indexOf(k);
+  if (i >= 0) arr.splice(i, 1); else arr.push(k);
+  btn.classList.toggle("active", arr.indexOf(k) >= 0);
 }
 
-// Week key → 顯示用標籤（如 "Week 1&2"）
-function weekTag(key) { return "Week " + key.replace(/&/g, " & "); }
+function setWeekRand(k, btn)   { toggleWeek(weekRand, k, btn); }
+function setWeekSpeak(k, btn)  { toggleWeek(weekSpeak, k, btn); }
+function setWeekListen(k, btn) { toggleWeek(weekListen, k, btn); }
+
+// 選定的多個 Week key → 顯示用標籤（依 WEEK_LIST 先後排序，如 "Week 1&2, 3"）
+function weekTag(keys) {
+  const order = WEEK_LIST.map(w => w.key);
+  const sorted = keys.slice().sort((a, b) => order.indexOf(a) - order.indexOf(b));
+  return "Week " + sorted.join(", ").replace(/&/g, " & ");
+}
 
 // ══════════ TAB A：隨機出題 ══════════
 function renderCard(w, contentId, tagLabel) {
@@ -916,6 +934,7 @@ function renderCardPlaceholder(contentId, icon, msg) {
 
 async function fetchWord() {
   if (busy) return;
+  if (weekRand.length === 0) { showToast("請先選擇至少一個 Week"); return; }
   busy = true;
   clearTtsBtn(); if (synth && synth.speaking) synth.cancel();
 
@@ -924,7 +943,7 @@ async function fetchWord() {
   card.classList.add("loading");
   nextBtn.disabled = true;
 
-  const pool = getWeekWords(weekRand);
+  const pool = collectWords(weekRand);
   const pick = pool[Math.floor(Math.random() * pool.length)];
   const seed = Math.floor(Math.random() * 99991) + 10;
 
@@ -1043,6 +1062,7 @@ ${list}
 // ══════════ TAB C：口說作答 ══════════
 async function genWords() {
   if (genBusy) return;
+  if (weekSpeak.length === 0) { showToast("請先選擇至少一個 Week"); return; }
   genBusy = true;
 
   const wrap   = document.getElementById("words-wrap");
@@ -1269,6 +1289,7 @@ function resetQuiz() {
 // ══════════ TAB D：聽力輸入 ══════════
 async function genWords2() {
   if (genBusy2) return;
+  if (weekListen.length === 0) { showToast("請先選擇至少一個 Week"); return; }
   genBusy2 = true;
   if (synth && synth.speaking) synth.cancel();
 
